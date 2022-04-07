@@ -3,8 +3,8 @@ from tcp.server import MyTCPServer, MyServerTCPHandler
 import sys
 import logging
 
-logging.config.fileConfig("logging.conf")
-logging.disable(logging.INFO)
+# logging.config.fileConfig("logging.conf")
+# logging.disable(logging.INFO)
 
 def main():
     flag = "server"
@@ -36,7 +36,7 @@ def main():
     if flag == "server":
         with open("syslog", "a") as log:
             with MyTCPServer((HOST, PORT), MyServerTCPHandler, bind_and_activate=True) as server_socket:
-                server_socket.myinit()
+                server_socket.myinit(log)
                 server_socket.serve_forever()
     else:
         with MyTCPClient((HOST, PORT), MyClientTCPHandler, bind_and_activate=True) as client_socket:

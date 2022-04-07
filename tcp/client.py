@@ -10,8 +10,8 @@ BLOCK_LENGTH = 1024
 IP = "127.0.0.1"
 PORT = 1234
 
-logging.config.fileConfig("logging.conf")
-logging.disable(logging.INFO)
+# logging.config.fileConfig("logging.conf")
+# logging.disable(logging.INFO)
 
 
 class MyClientTCPHandler(socketserver.BaseRequestHandler):
@@ -59,7 +59,7 @@ class MyClientTCPHandler(socketserver.BaseRequestHandler):
             #     self.logger.warning("unsupported message type")
 
 
-class MyTCPServer(socketserver.TCPServer):
+class MyTCPClient(socketserver.TCPServer):
     STATE = ""
 
     logger = logging.getLogger("SocketClient")
@@ -187,11 +187,11 @@ class MyTCPServer(socketserver.TCPServer):
         self.wait_for_continue.join()
         self.logger.info("Server closed. Bye")
         sys.exit()
-        return super(MyTCPServer, self).server_close()
+        return super(MyTCPClient, self).server_close()
 
 
 def main():
-    with MyTCPServer((IP, PORT), MyClientTCPHandler, bind_and_activate=True) as client_socket:
+    with MyTCPClient((IP, PORT), MyClientTCPHandler, bind_and_activate=True) as client_socket:
         client_socket.serve_forever()
         print("Sever closed")
 

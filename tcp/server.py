@@ -11,8 +11,7 @@ BLOCK_LENGTH = 1024
 HOST = "127.0.0.1"
 PORT = 1234
 
-logging.config.fileConfig("logging.conf")
-logging.FileHandler("syslog")
+
 
 if hasattr(selectors, 'PollSelector'):
     _ServerSelector = selectors.PollSelector
@@ -20,7 +19,7 @@ else:
     _ServerSelector = selectors.SelectSelector
 
 
-class MyTCPHandler(socketserver.BaseRequestHandler):
+class MyServerTCPHandler(socketserver.BaseRequestHandler):
 
     def send(self, raw, recipient=None):
         if recipient is None:
@@ -55,7 +54,7 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
         if TYPE == "HI":
             self.running = True
             self.logger = logging.getLogger(f"syslog")
-            self.logger.info(f"Accepted new user {DATA}")
+            self.server.log.write(f"Accepted new user {DATA}\n")
             self.user = DATA
             self.server.users[self.user] = self.send
             self.server.read_selector.register(self.request, selectors.EVENT_READ, data=self)
@@ -78,12 +77,12 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
             self.server.write_selector.unregister(self.request)
             del self.server.users[self.user]
             print(f"{self.user} has left ... len users {len(self.server.users)}")
-            self.logger.info(f"User {self.user} has left ...")
+            self.server.log.write(f"User {self.user} has left ...\n")
             self.running = False
 
     def send_state(self):
         self.logger.debug("send_state")
-        self.logger.info(f"{self.user} asks server status - {self.server.STATE}")
+        self.server.log.write(f"{self.user} asks server status - {self.server.STATE}\n")
         raw = self.server.puck_message(TYPE="STATE", BODY=self.server.STATE)
         self.send(raw)
 
@@ -91,28 +90,28 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
         self.logger.debug("send_back_poll")
         users = self.server.get_users_list()
         self.logger.debug(f"self.server.users.keys() {users}")
-        self.logger.info(f"{self.user} asks server about active connections - {users}")
+        self.server.log.write(f"{self.user} asks server about active connections - {users}\n")
         raw = self.server.puck_message(TYPE="WHOAVAIL", BODY=users)
         self.send(raw)
 
     def send_from_to(self, message_pack):
         self.logger.debug("send_from_to")
         usr, msg = message_pack
-        self.logger.info(f"{self.user} > {msg}")
+        self.server.log.write(f"{self.user} > {msg}\n")
         try:
             send_func = self.server.users.get(f"{usr}")
             raw = self.server.puck_message(TYPE="INCMESS", BODY=[self.user, msg])
             send_func(raw)
         except Exception as e:
             self.logger.error(e)
-            self.logger.info(f"{self.user} <sending failure>")
+            self.server.log.write(f"{self.user} <sending failure>\n")
             raw = self.server.puck_message(TYPE="MESSTAT",
                                            BODY=False)
             self.send(raw)
 
     def message_acc(self, meta):
         self.logger.debug("message_acc")
-        self.logger.info(f"{self.user} : <accepted>")
+        self.server.log.write(f"{self.user} : <accepted>\n")
         try:
             send_func = self.server.users[f"{meta}"]
             raw = self.server.puck_message(TYPE="MESSTAT", BODY=True)
@@ -124,7 +123,7 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
     def send_broadcast(self, message):
         self.logger.debug("send_broadcast")
         raw = self.server.puck_message(TYPE="BROADCAST", BODY=[self.user, message])
-        self.logger.info(f"{self.user} <broadcast> {message}")
+        self.server.log.write(f"{self.user} <broadcast> {message}\n")
         try:
             x = self.server.write_selector.select()
             for cmd, event in x:
@@ -134,13 +133,13 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
             self.send(raw)
         except Exception as e:
             self.logger.error(e)
-            self.logger.info(f"{self.user} <broadcast> {message} <failure>")
+            self.server.log.write(f"{self.user} <broadcast> {message} <failure>\n")
             raw = self.server.puck_message(TYPE="MESSTAT", BODY=False)
             self.send(raw)
 
     def close_connection(self):
         self.logger.debug("close_connection")
-        self.logger.info(f"{self.user} leaves server")
+        self.server.log.write(f"{self.user} leaves server\n")
         raw = self.server.puck_message(TYPE="BYE", BODY=False)
         self.send(raw)
         self.finish()
@@ -171,7 +170,14 @@ class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     read_selector = _ServerSelector()
     write_selector = _ServerSelector()
 
-    def myinit(self):
+    def myinit(self, log=None):
+        if log is None:
+            class Mock:
+                def write(self):
+                    pass
+            self.log = Mock()
+        else:
+            self.log = log
         self._STATE = "WAIT4CLIENTS"
 
     @property
@@ -189,7 +195,7 @@ class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 cmd = command.data
                 cmd(raw)
             self._STATE = value
-            self.logger.info(f"server at {self._STATE} state")
+            self.log.write(f"server at {self._STATE} state\n")
         except OSError as e:
             self.logger.warning(f"Error occurred: {e}")
             sys.exit(1)
@@ -244,7 +250,7 @@ class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 def main():
     try:
-        with MyTCPServer((HOST, PORT), MyTCPHandler, bind_and_activate=True) as server_socket:
+        with MyTCPServer((HOST, PORT), MyServerTCPHandler, bind_and_activate=True) as server_socket:
             server_socket.myinit()
             server_socket.serve_forever()
     except Exception:
