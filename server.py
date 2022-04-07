@@ -4,12 +4,20 @@ import socket
 import socketserver
 import select, selectors
 import time
+import logging
+import logging.config
+import json
+import sys
 
-HEADER_LENGTH = 10
-BLOCK_LENGHT = 1024
+# HEADER_LENGTH = 10
+BLOCK_LENGTH = 1024
 
 HOST = "127.0.0.1"
 PORT = 1234
+
+logging.config.fileConfig("logging.conf")
+# logging.disable(logging.INFO)
+logging.FileHandler("syslog")
 
 if hasattr(selectors, 'PollSelector'):
     _ServerSelector = selectors.PollSelector
@@ -19,225 +27,231 @@ else:
 
 class MyTCPHandler(socketserver.BaseRequestHandler):
 
+    def send(self, raw, recipient=None):
+        if recipient is None:
+            self.logger.debug("Sending back response")
+            self.logger.debug(raw)
+            if len(raw) != self.request.send(raw):
+                self.logger.warning(f"Message TO {self.user} was not delivered or wasn't fully delivered")
+                raise Exception("Message was not delivered or wasn't fully delivered")
+        self.logger.debug("Sending successfully!")
+
     def read(self):
-        data = self.server.users[self.client_address].decode("utf-8")
         try:
-            message = self.request.recv(BLOCK_LENGHT).decode("utf-8")
-            if not message:
+            raw = self.request.recv(BLOCK_LENGTH)
+            if not raw:
                 raise OSError
-            data += " > " + message
-            # data += self.request.recv(BLOCK_LENGHT).decode("utf-8")
-            # self.request.flush()
+            data = raw
+            self.logger.debug("Incoming message (handler.read) ... ")
         except OSError as e:
-            self.server.read_selector.unregister(self.request)
-            self.server.write_selector.unregister(self.request)
-            del self.server.users[self.client_address]
-            self.running = False
-            data += " has left the chat ..."
-            # print(f"In read func Ecxeption! {e}")
+            self.finish()
+            data = b""
         except Exception as e:
+            self.logger.warning(f"Unknown exception {e}")
             self.running = False
-            print(e)
+            data = b""
         finally:
             return data
-        # print("I'm ready to accept!")
-
-    def write(self, messages):
-        # for i, message in enumerate(messages):
-        #     if i == 0 and len(messages) > 1:
-        #         chat = message
-        #     elif i > 0 and len(messages) > 1:
-        #         chat = messages + "\n"
-        #     elif i == len(messages) - 1:
-        #         chat = message
-        chat = "\n".join(messages)
-        self.request.sendall(chat.encode("utf-8"))
-
-        print("i'm ready to write!")
 
     def handle(self):
-        self.running = True
-        data = self.request.recv(HEADER_LENGTH)
-        # self.server.sockets.append(self.request)
-        self.server.users[self.client_address] = data
-        # self.request.flush()
-        # self.request.setblocking(False)
-        print(self.request)
-        self.server.read_selector.register(self.request, selectors.EVENT_READ, data=self.read)
-        self.server.write_selector.register(self.request, selectors.EVENT_WRITE, data=self.write)
-        # self.server.read_selector.register(self.request, selectors.EVENT_READ | selectors.EVENT_WRITE, data=lambda x:self.read(x))
-        # self.server.write_selector.register(self.request, selectors.EVENT_WRITE, data=self.write)
+        self.server.logger.info("First connection ... ")
+        raw = self.request.recv(BLOCK_LENGTH)
+        TYPE, DATA = self.server.unpack_message(raw)
+        if TYPE == "HI":
+            self.running = True
+            self.logger = logging.getLogger(f"syslog")
+            self.logger.info(f"Accepted new user {DATA}")
+            self.user = DATA
+            self.server.users[self.user] = self.send
+            self.server.read_selector.register(self.request, selectors.EVENT_READ, data=self)
+            self.server.write_selector.register(self.request, selectors.EVENT_WRITE, data=self.send)
+            self.logger.debug(f"socket has been registered")
+            raw = self.server.puck_message(TYPE="STATE", BODY=self.server.STATE)
+            self.send(raw)
+            self.logger.debug(f"socket alive")
+            print(f"{self.user} has joined --- len users {len(self.server.users)}")
+            while self.running:
+                time.sleep(1)
+            # self.logger.info(f"User {self.user} has left ... ")
 
-        print("Registered!")
-        while self.running:
-            time.sleep(1)
-            # print("Thread alive!")
-        # print("Exit thread")
-        # self.server.write_selector.register(self.request, selectors.EVENT_WRITE)
+        else:
+            self.server.logger.warning("Connection denied")
 
-        # self.request.sendall(data.upper())
+    def finish(self):
+        if self.running:
+            self.server.read_selector.unregister(self.request)
+            self.server.write_selector.unregister(self.request)
+            del self.server.users[self.user]
+            print(f"{self.user} has left ... len users {len(self.server.users)}")
+            self.logger.info(f"User {self.user} has left ...")
+            self.running = False
+
+    def send_state(self):
+        self.logger.debug("send_state")
+        self.logger.info(f"{self.user} asks server status - {self.server.STATE}")
+        raw = self.server.puck_message(TYPE="STATE", BODY=self.server.STATE)
+        self.send(raw)
+
+    def send_back_poll(self):
+        self.logger.debug("send_back_poll")
+        users = self.server.get_users_list()
+        self.logger.debug(f"self.server.users.keys() {users}")
+        self.logger.info(f"{self.user} asks server about active connections - {users}")
+        raw = self.server.puck_message(TYPE="WHOAVAIL", BODY=users)
+        self.send(raw)
+
+    def send_from_to(self, message_pack):
+        self.logger.debug("send_from_to")
+        usr, msg = message_pack
+        self.logger.info(f"{self.user} > {msg}")
+        try:
+            send_func = self.server.users.get(f"{usr}")
+            raw = self.server.puck_message(TYPE="INCMESS", BODY=[self.user, msg])
+            send_func(raw)
+        except Exception as e:
+            self.logger.error(e)
+            self.logger.info(f"{self.user} <sending failure>")
+            raw = self.server.puck_message(TYPE="MESSTAT",
+                                           BODY=False)
+            self.send(raw)
+
+    def message_acc(self, meta):
+        self.logger.debug("message_acc")
+        self.logger.info(f"{self.user} : <accepted>")
+        try:
+            send_func = self.server.users[f"{meta}"]
+            raw = self.server.puck_message(TYPE="MESSTAT", BODY=True)
+            send_func(raw)
+        except:
+            self.logger.error(f"Error occurred while sending to {meta}")
+            pass
+
+    def send_broadcast(self, message):
+        self.logger.debug("send_broadcast")
+        raw = self.server.puck_message(TYPE="BROADCAST", BODY=[self.user, message])
+        self.logger.info(f"{self.user} <broadcast> {message}")
+        try:
+            x = self.server.write_selector.select()
+            for cmd, event in x:
+                func = cmd.data
+                func(raw)
+            raw = self.server.puck_message(TYPE="MESSTAT", BODY=True)
+            self.send(raw)
+        except Exception as e:
+            self.logger.error(e)
+            self.logger.info(f"{self.user} <broadcast> {message} <failure>")
+            raw = self.server.puck_message(TYPE="MESSTAT", BODY=False)
+            self.send(raw)
+
+    def close_connection(self):
+        self.logger.debug("close_connection")
+        self.logger.info(f"{self.user} leaves server")
+        raw = self.server.puck_message(TYPE="BYE", BODY=False)
+        self.send(raw)
+        self.finish()
+
+    def do_action(self, user_raw):
+        self.logger.debug("Performing action ...")
+        TYPE, BODY = user_raw
+        self.logger.debug(f"query type: {TYPE} - {BODY}")
+        match TYPE:
+            case "STATE":
+                self.send_state()
+            case "WHOAVAIL":
+                self.send_back_poll()
+            case "SENDTO":
+                self.send_from_to(BODY)
+            case "MESSACC":
+                self.message_acc(BODY)
+            case "EVERY1":
+                self.send_broadcast(BODY)
+            case "BYE":
+                self.close_connection()
 
 
 class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    logger = logging.getLogger("MyTCPHandler")
     sockets = []
     users = {}
     read_selector = _ServerSelector()
     write_selector = _ServerSelector()
 
-    def process_request(self, request, client_address):
-        return super(MyTCPServer, self).process_request(request, client_address)
+    def myinit(self):
+        self._STATE = "WAIT4CLIENTS"
 
+    @property
+    def STATE(self):
+        return self._STATE
 
-    def service_actions(self) -> None:
+    @STATE.setter
+    def STATE(self, value):
         try:
-            # print("Lets try ...")
-            # print(self.sockets)
-            queue = []
-            x = self.read_selector.select(timeout=0.5)
-            print("alive!")
-            if x:
-                # print(x)
-                for key, event in x:
-                    # sock = key.fileobj
-                    # print(key)
-                    # raddr = key.raddr
-                    gain_message = key.data
-                    queue.append(gain_message())
-            if queue:
-                x = self.write_selector.select()
-                for key, event in x:
-                    write_message = key.data
-                    write_message(queue)
-            #         print(event == selectors.EVENT_WRITE)
-            # y = self.write_selector.select(timeout=0.5)
-            # print("It works!")
-            print(queue)
-            # print("Hi")
-            # print(x,y)
-            pass
+            self.logger.info(f"changing state to {value}")
+            x = self.write_selector.select()
+            raw = self.puck_message(TYPE="STATE", BODY=value)
+
+            for command, event in x:
+                cmd = command.data
+                cmd(raw)
+            self._STATE = value
+            self.logger.info(f"server at {self._STATE} state")
         except OSError as e:
-            print(e)
+            self.logger.warning(f"Error occurred: {e}")
+            sys.exit(1)
+
+    @STATE.getter
+    def STATE(self):
+        return self._STATE
+
+    def get_users_list(self):
+        return [*self.users.keys()]
+
+    def puck_message(self, TYPE="STATE", BODY="BODY"):
+        msg = {}
+        msg['TYPE'] = TYPE
+        msg['BODY'] = BODY
+        return bytes(json.dumps(msg).encode("utf8"))
+
+    def unpack_message(self, raw):
+        message = json.loads(raw.decode("utf-8"))
+        return message["TYPE"], message["BODY"]
+
+    def send_to_user(self, request):
+        pass
+
+    def service_actions(self):
+        # self.logger.debug("i'm alive")
+        if len(self.users) < 2 and self.STATE == "READY2SERV":
+            self.STATE = "WAIT4CLIENTS"  # magick property
+        if len(self.users) >= 2 and self.STATE == "WAIT4CLIENTS":
+            self.STATE = "READY2SERV"    # magick property
+
+        try:
+            x = self.read_selector.select(timeout=0.5)
+            if x:
+                for key, event in x:
+                    query = key.data
+                    user_raw = query.read()
+                    user_query = self.unpack_message(user_raw)
+                    query.do_action(user_query)
+        except OSError as e:
+            # self.logger.error(f"OSError : {e}")
             pass
         except ValueError as e:
-            print(e)
-            # self.sockets = [s for s in self.sockets if s.fileno() >= 0]
-
-            # self.shutdown()
+            self.logger.error(f"ValueError : {e}")
             # sys.exit(0)
         except Exception as e:
-            print(e)
+            self.logger.error(f"Exception : {e}")
+            sys.exit()
 
         return super(MyTCPServer, self).service_actions()
 
     pass
 
 
-with MyTCPServer((HOST, PORT), MyTCPHandler, bind_and_activate=True) as server_socket:
-    server_socket.serve_forever()
-
-# server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-# server_socket.bind((IP, PORT))
-# server_socket.listen()
-# sockets_list = [server_socket]
-# clients = {}
-#
-# print(f'Listening for connections on {IP}:{PORT}...')
-#
-# # Handles message receiving
-# def receive_message(client_socket):
-#     try:
-#         message_header = client_socket.recv(HEADER_LENGTH)
-#         if not len(message_header):
-#             return False
-#         message_length = int(message_header.decode('utf-8').strip())
-#         return {'header': message_header, 'data': client_socket.recv(message_length)}
-#
-#     except:
-#         # If we are here, client closed connection violently, for example by pressing ctrl+c on his script
-#         # or just lost his connection
-#         # socket.close() also invokes socket.shutdown(socket.SHUT_RDWR) what sends information about closing the socket (shutdown read/write)
-#         # and that's also a cause when we receive an empty message
-#         return False
-#
-# while True:
-#
-#     # Calls Unix select() system call or Windows select() WinSock call with three parameters:
-#     #   - rlist - sockets to be monitored for incoming data
-#     #   - wlist - sockets for data to be send to (checks if for example buffers are not full and socket is ready to send some data)
-#     #   - xlist - sockets to be monitored for exceptions (we want to monitor all sockets for errors, so we can use rlist)
-#     # Returns lists:
-#     #   - reading - sockets we received some data on (that way we don't have to check sockets manually)
-#     #   - writing - sockets ready for data to be send thru them
-#     #   - errors  - sockets with some exceptions
-#     # This is a blocking call, code execution will "wait" here and "get" notified in case any action should be taken
-#     read_sockets, _, exception_sockets = select.select(sockets_list, [], sockets_list)
-#
-#
-#     # Iterate over notified sockets
-#     for notified_socket in read_sockets:
-#
-#         # If notified socket is a server socket - new connection, accept it
-#         if notified_socket == server_socket:
-#
-#             # Accept new connection
-#             # That gives us new socket - client socket, connected to this given client only, it's unique for that client
-#             # The other returned object is ip/port set
-#             client_socket, client_address = server_socket.accept()
-#
-#             # Client should send his name right away, receive it
-#             user = receive_message(client_socket)
-#
-#             # If False - client disconnected before he sent his name
-#             if user is False:
-#                 continue
-#
-#             # Add accepted socket to select.select() list
-#             sockets_list.append(client_socket)
-#
-#             # Also save username and username header
-#             clients[client_socket] = user
-#
-#             print('Accepted new connection from {}:{}, username: {}'.format(*client_address, user['data'].decode('utf-8')))
-#
-#         # Else existing socket is sending a message
-#         else:
-#
-#             # Receive message
-#             message = receive_message(notified_socket)
-#
-#             # If False, client disconnected, cleanup
-#             if message is False:
-#                 print('Closed connection from: {}'.format(clients[notified_socket]['data'].decode('utf-8')))
-#
-#                 # Remove from list for socket.socket()
-#                 sockets_list.remove(notified_socket)
-#
-#                 # Remove from our list of users
-#                 del clients[notified_socket]
-#
-#                 continue
-#
-#             # Get user by notified socket, so we will know who sent the message
-#             user = clients[notified_socket]
-#
-#             print(f'Received message from {user["data"].decode("utf-8")}: {message["data"].decode("utf-8")}')
-#
-#             # Iterate over connected clients and broadcast message
-#             for client_socket in clients:
-#
-#                 # But don't sent it to sender
-#                 if client_socket != notified_socket:
-#
-#                     # Send user and message (both with their headers)
-#                     # We are reusing here message header sent by sender, and saved username header send by user when he connected
-#                     client_socket.send(user['header'] + user['data'] + message['header'] + message['data'])
-#
-#     # It's not really necessary to have this, but will handle some socket exceptions just in case
-#     for notified_socket in exception_sockets:
-#
-#         # Remove from list for socket.socket()
-#         sockets_list.remove(notified_socket)
-#
-#         # Remove from our list of users
-#         del clients[notified_socket]
+try:
+    with MyTCPServer((HOST, PORT), MyTCPHandler, bind_and_activate=True) as server_socket:
+        server_socket.myinit()
+        server_socket.serve_forever()
+except Exception:
+    print("CRITICAL - server dead")
