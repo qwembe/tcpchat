@@ -1,21 +1,10 @@
 import socket
-import selectors
-import errno
 import sys
 import socketserver
-import time
 import json
 import threading
-import os
-import logging
 import logging.config
 
-# if hasattr(selectors, 'PollSelector'):
-#     _ServerSelector = selectors.PollSelector
-# else:
-#     _ServerSelector = selectors.SelectSelector
-
-# HEADER_LENGTH = 10
 BLOCK_LENGTH = 1024
 
 IP = "127.0.0.1"
@@ -40,34 +29,34 @@ class MyClientTCPHandler(socketserver.BaseRequestHandler):
 
         self.logger.debug(raw)
         TYPE, BODY = self.server.unpack_message(raw)
-        match TYPE:
-            case "STATE":
-                self.server.STATE = BODY
-                print(f"< Server is {self.server.STATE} >")
-            case "INCMESS":
-                log, message = BODY
-                print(f"{log}  : {message}")
-                raw = self.server.puck_message(TYPE="MESSACC", BODY=log)
-                self.server.send(raw)
-            case "MESSTAT":
-                if BODY:
-                    print("< Message have been delivered! >  =)")
-                else:
-                    print("< Message sending failure >       =(")
-            case "BROADCAST":
-                from_who, message = BODY
-                print(f"broadcast - {from_who} : {message}")
-            case "WHOAVAIL":
-                print("Users:")
-                print("; ".join(BODY))
-                pass
-            case "BYE":
-                print("< Server Dead. =( >")
-                self.server.server_close()
-                self.server.shutdown()
-                sys.exit()
-            case _:
-                self.logger.warning("unsupported message type")
+
+        if TYPE == "STATE":
+            self.server.STATE = BODY
+            print(f"< Server is {self.server.STATE} >")
+        elif TYPE == "INCMESS":
+            log, message = BODY
+            print(f"{log}  : {message}")
+            raw = self.server.puck_message(TYPE="MESSACC", BODY=log)
+            self.server.send(raw)
+        elif TYPE == "MESSTAT":
+            if BODY:
+                print("< Message have been delivered! >  =)")
+            else:
+                print("< Message sending failure >       =(")
+        elif TYPE == "BROADCAST":
+            from_who, message = BODY
+            print(f"broadcast - {from_who} : {message}")
+        elif TYPE == "WHOAVAIL":
+            print("Users:")
+            print("; ".join(BODY))
+            pass
+        elif TYPE == "BYE":
+            print("< Server Dead. =( >")
+            self.server.server_close()
+            self.server.shutdown()
+            sys.exit()
+            # case _:
+            #     self.logger.warning("unsupported message type")
 
 
 class MyTCPServer(socketserver.TCPServer):
@@ -102,13 +91,6 @@ class MyTCPServer(socketserver.TCPServer):
         raw = self.puck_message(TYPE="STATE")
         self.send(raw)
         self.logger.info("ask_state")
-        # match self.STATE:
-        #     case "WAIT4CLIENTS":
-        #         print("Server is waiting for new users ...")
-        #     case "READY2SERV":
-        #         print("Server is active ...")
-        #     case _:
-        #         print("Unknown state")
 
     def ask_users(self):
         self.logger.info("ask_users")
@@ -153,19 +135,19 @@ class MyTCPServer(socketserver.TCPServer):
         # print(self.key_pressed)
         if self.key_pressed:
             key = self.print_menu()
-            match key:
-                case 1:
-                    self.ask_state()
-                case 2:
-                    self.ask_users()
-                case 3:
-                    self.send_to()
-                case 4:
-                    self.send2all()
-                case 5:
-                    self.close_connection()
-                case _:
-                    print("< Waiting for messages ... >")
+
+            if key == 1:
+                self.ask_state()
+            elif key == 2:
+                self.ask_users()
+            elif key == 3:
+                self.send_to()
+            elif key == 4:
+                self.send2all()
+            elif key == 5:
+                self.close_connection()
+
+            print("< Waiting for messages ... >")
             self.key_pressed = False
             self.wait_for_continue = threading.Thread(target=self.worker_input)
             self.wait_for_continue.start()

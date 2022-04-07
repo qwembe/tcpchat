@@ -1,22 +1,17 @@
-# https://github.com/tornadoweb/tornado/tree/stable/demos/chat
-
-import socket
 import socketserver
-import select, selectors
+import selectors
 import time
 import logging
 import logging.config
 import json
 import sys
 
-# HEADER_LENGTH = 10
 BLOCK_LENGTH = 1024
 
 HOST = "127.0.0.1"
 PORT = 1234
 
 logging.config.fileConfig("logging.conf")
-# logging.disable(logging.INFO)
 logging.FileHandler("syslog")
 
 if hasattr(selectors, 'PollSelector'):
@@ -154,19 +149,19 @@ class MyTCPHandler(socketserver.BaseRequestHandler):
         self.logger.debug("Performing action ...")
         TYPE, BODY = user_raw
         self.logger.debug(f"query type: {TYPE} - {BODY}")
-        match TYPE:
-            case "STATE":
-                self.send_state()
-            case "WHOAVAIL":
-                self.send_back_poll()
-            case "SENDTO":
-                self.send_from_to(BODY)
-            case "MESSACC":
-                self.message_acc(BODY)
-            case "EVERY1":
-                self.send_broadcast(BODY)
-            case "BYE":
-                self.close_connection()
+
+        if TYPE == "STATE":
+            self.send_state()
+        elif TYPE == "WHOAVAIL":
+            self.send_back_poll()
+        elif TYPE == "SENDTO":
+            self.send_from_to(BODY)
+        elif TYPE == "MESSACC":
+            self.message_acc(BODY)
+        elif TYPE == "EVERY1":
+            self.send_broadcast(BODY)
+        elif TYPE == "BYE":
+            self.close_connection()
 
 
 class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -224,7 +219,7 @@ class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         if len(self.users) < 2 and self.STATE == "READY2SERV":
             self.STATE = "WAIT4CLIENTS"  # magick property
         if len(self.users) >= 2 and self.STATE == "WAIT4CLIENTS":
-            self.STATE = "READY2SERV"    # magick property
+            self.STATE = "READY2SERV"  # magick property
 
         try:
             x = self.read_selector.select(timeout=0.5)
@@ -246,12 +241,15 @@ class MyTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
         return super(MyTCPServer, self).service_actions()
 
-    pass
+
+def main():
+    try:
+        with MyTCPServer((HOST, PORT), MyTCPHandler, bind_and_activate=True) as server_socket:
+            server_socket.myinit()
+            server_socket.serve_forever()
+    except Exception:
+        print("CRITICAL - server dead")
 
 
-try:
-    with MyTCPServer((HOST, PORT), MyTCPHandler, bind_and_activate=True) as server_socket:
-        server_socket.myinit()
-        server_socket.serve_forever()
-except Exception:
-    print("CRITICAL - server dead")
+if __name__ == '__main__':
+    main()
