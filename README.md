@@ -48,16 +48,17 @@ pip install -e git+https://github.com/qwembe/tcpchat#egg=tcpchat
 
 ### Oracle linux
 
-Сначала необходимо установить python 3.9
+Сначала необходимо установить python 3.9 и pip
 
 ```bash
 sudo dnf module install -y python39
+sudo dnf install -y python39-pip
 ```
 
 Затем убедится, что есть git
 
 ```bash
-sudo dnf install -y python39-pip
+sudo dnf install -y git
 ```
 
 Установим виртуальную среду
